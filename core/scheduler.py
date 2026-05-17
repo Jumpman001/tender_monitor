@@ -74,8 +74,10 @@ async def run_full_scan(bot: Bot) -> None:
                 url = raw.get("url", "")
                 source = raw.get("source", source_name)
 
-                # Фильтрация
-                if not passes_filter(title, description):
+                # Фильтрация (страна + статус + ключевые слова + DN)
+                raw_status = raw.get("status", "")
+                raw_region = raw.get("region", "")
+                if not passes_filter(title, description, raw_status, raw_region):
                     continue
 
                 # Дедупликация

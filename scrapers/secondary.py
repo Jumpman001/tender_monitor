@@ -138,12 +138,10 @@ class SecondaryScraper(BaseScraper):
                     if link and not link.startswith("http"):
                         link = urljoin(base_domain, link)
 
-                    # Фильтр по Tajikistan
+                    # Фильтр по Tajikistan — строго только Таджикистан
                     row_text = row.get_text(strip=True).lower()
                     if "tajikistan" not in row_text and "таджикистан" not in row_text:
-                        # Для EDB — проверяем все строки
-                        if donor not in ("EDB/EFSD",):
-                            continue
+                        continue
 
                     description = " | ".join(
                         c.get_text(strip=True) for c in cells[1:] if c.get_text(strip=True)

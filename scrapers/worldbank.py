@@ -127,6 +127,7 @@ class WorldBankScraper(BaseScraper):
             "https://search.worldbank.org/api/v2/procnotices"
             "?format=json"
             "&project_ctry_code=TJ"
+            "&notice_status_exact=Published"
             "&rows=50&os=0"
         )
         results = []
@@ -167,9 +168,17 @@ class WorldBankScraper(BaseScraper):
                 notice_id = notice.get("id", "")
                 notice_type = notice.get("notice_type", "")
                 project_name = notice.get("project_name", "")
-                notice_text = notice.get("notice_text", "")[:500]
+                notice_text = notice.get("notice_text", "")[:1500]
+                contact_address = notice.get("contact_address", "")
+                contact_phone = notice.get("contact_phone_no", "")
 
-                description = f"{notice_type}: {project_name}" if project_name else notice_type
+                # Обогащаем description для AI — чем больше текста, тем лучше карточка
+                desc_parts = [f"{notice_type}: {project_name}" if project_name else notice_type]
+                if notice_text:
+                    desc_parts.append(notice_text)
+                if contact_address:
+                    desc_parts.append(f"Address: {contact_address}")
+                description = "\n".join(desc_parts)
 
                 # URL: ссылка на страницу проекта с секцией procurement
                 # (единственный рабочий формат — 200 OK, проверено)
@@ -190,8 +199,10 @@ class WorldBankScraper(BaseScraper):
                     "donor": "World Bank IDA",
                     "tender_deadline": str(deadline)[:10] if deadline else None,
                     "contact_email": contact_email if contact_email else None,
+                    "contact_phone": contact_phone if contact_phone else None,
                     "contact_name": f"{contact_name} ({contact_org})" if contact_org else contact_name or None,
                     "status": notice.get("notice_status", "Active"),
+                    "region": "Tajikistan",
                 })
         except Exception as e:
             logger.error("[WorldBank] Ошибка STEP API: %s", e)
