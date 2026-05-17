@@ -91,7 +91,7 @@ def start_keyboard() -> InlineKeyboardMarkup:
             ),
             InlineKeyboardButton(
                 text="🌐 Поиск в сети",
-                callback_data="cmd:deep_search",
+                callback_data="action:deep_search",
             ),
         ],
     ]

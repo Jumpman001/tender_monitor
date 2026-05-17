@@ -379,7 +379,7 @@ async def callback_tender_history(callback: CallbackQuery):
 
 # ─── Глубокий поиск (Deep Search) ────────────────────────────────────
 
-@router.callback_query(F.data == "cmd:deep_search")
+@router.callback_query(F.data == "action:deep_search")
 async def process_deep_search_btn(callback: CallbackQuery, state: FSMContext):
     """Нажатие кнопки 'Поиск в сети'."""
     await callback.message.answer(
