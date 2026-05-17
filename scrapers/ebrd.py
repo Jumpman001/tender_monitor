@@ -1,5 +1,11 @@
 """
-EBRD Scraper — European Bank for Reconstruction and Development procurement notices.
+EBRD Scraper v2 — European Bank for Reconstruction and Development.
+
+EBRD сайт JS-рендерный. Procurement notices грузятся через JavaScript.
+Используем:
+- /work-with-us/procurement/notices.html ✅ 200 (154KB)
+  Парсим результаты из HTML (EBRD встраивает данные в скрытые элементы)
+- /home/what-we-do/projects.html ✅ 200 — проекты
 """
 
 from bs4 import BeautifulSoup
@@ -10,164 +16,185 @@ from utils.logger import logger
 
 
 class EBRDScraper(BaseScraper):
-    """Скрапер для EBRD procurement notices — Таджикистан."""
+    """Скрапер для EBRD — Таджикистан."""
 
     def __init__(self):
         super().__init__("EBRD")
 
     async def scrape(self) -> list[dict]:
-        """Парсит procurement notices EBRD для Таджикистана."""
-        url = (
-            "https://www.ebrd.com/work-with-us/procurement/"
-            "project-procurement-notices.html?1=1&filterCountry=Tajikistan"
-        )
         results = []
 
+        # 1. Procurement notices
+        proc = await self._scrape_procurement()
+        results.extend(proc)
+        logger.info("[EBRD] Procurement: %d", len(proc))
+        await self.delay()
+
+        # 2. Projects page
+        proj = await self._scrape_projects()
+        results.extend(proj)
+        logger.info("[EBRD] Projects: %d", len(proj))
+
+        logger.info("[EBRD] ИТОГО: %d", len(results))
+        return results
+
+    async def _scrape_procurement(self) -> list[dict]:
+        """Парсим procurement notices EBRD."""
+        results = []
+
+        urls = [
+            "https://www.ebrd.com/work-with-us/procurement/notices.html",
+            (
+                "https://www.ebrd.com/work-with-us/procurement/"
+                "project-procurement-notices.html?1=1&filterCountry=Tajikistan"
+            ),
+        ]
+
+        for url in urls:
+            html = await self.fetch(url)
+            if not html:
+                continue
+
+            try:
+                soup = BeautifulSoup(html, "lxml")
+
+                # Ищем таблицы
+                for table in soup.select("table"):
+                    rows = table.select("tbody tr, tr")
+                    for row in rows:
+                        try:
+                            cells = row.select("td")
+                            if len(cells) < 2:
+                                continue
+
+                            row_text = row.get_text().lower()
+                            if "tajikistan" not in row_text and "таджикистан" not in row_text:
+                                continue
+
+                            title_el = row.select_one("a[href]")
+                            title = title_el.get_text(strip=True) if title_el else cells[0].get_text(strip=True)
+                            if not title or len(title) < 5:
+                                continue
+
+                            link = ""
+                            if title_el:
+                                link = title_el.get("href", "")
+                                if link and not link.startswith("http"):
+                                    link = urljoin("https://www.ebrd.com", link)
+
+                            sector = cells[2].get_text(strip=True) if len(cells) > 2 else ""
+                            notice_type = cells[3].get_text(strip=True) if len(cells) > 3 else ""
+                            deadline = cells[4].get_text(strip=True) if len(cells) > 4 else ""
+
+                            results.append({
+                                "source": "EBRD",
+                                "title": title,
+                                "url": link or url,
+                                "description": f"Sector: {sector}. Type: {notice_type}",
+                                "donor": "EBRD",
+                                "tender_deadline": deadline if deadline else None,
+                                "region": "Tajikistan",
+                                "status": "Active",
+                            })
+                        except Exception:
+                            continue
+
+                # Ищем карточки и ссылки с Tajikistan
+                if not results:
+                    all_links = soup.select("a[href]")
+                    for a in all_links:
+                        href = a.get("href", "")
+                        text = a.get_text(strip=True)
+                        parent_text = (a.parent.get_text(strip=True) if a.parent else "").lower()
+
+                        if not text or len(text) < 10:
+                            continue
+                        if "tajikistan" not in parent_text and "tajikistan" not in text.lower():
+                            continue
+                        if any(skip in href for skip in ["#", "javascript:", "mailto:"]):
+                            continue
+
+                        full_url = href if href.startswith("http") else urljoin("https://www.ebrd.com", href)
+                        results.append({
+                            "source": "EBRD",
+                            "title": text,
+                            "url": full_url,
+                            "donor": "EBRD",
+                            "region": "Tajikistan",
+                            "status": "Active",
+                        })
+
+            except Exception as e:
+                logger.error("[EBRD] Procurement error: %s", e)
+
+            if results:
+                break
+            await self.delay()
+
+        return results
+
+    async def _scrape_projects(self) -> list[dict]:
+        """Парсим страницу проектов EBRD для Таджикистана."""
+        results = []
+
+        url = (
+            "https://www.ebrd.com/home/what-we-do/projects.html"
+            "?1=1&filterCountry=Tajikistan"
+            "&filterSector=Municipal%20and%20environmental%20infrastructure"
+        )
         html = await self.fetch(url)
         if not html:
-            logger.warning("[EBRD] Не удалось загрузить страницу")
             return results
 
         try:
             soup = BeautifulSoup(html, "lxml")
 
-            # EBRD отображает notices в таблице или карточках
-            # Пробуем таблицу
-            table = soup.select_one("table.procurement-table, table")
-            if table:
-                rows = table.select("tbody tr")
-                for row in rows:
-                    try:
-                        cells = row.select("td")
-                        if len(cells) < 2:
-                            continue
+            # Ищем проекты
+            items = soup.select(
+                ".project-card, .project-item, article, .card, "
+                ".search-result, .result, .views-row, .node"
+            )
 
-                        title_cell = cells[0]
-                        title_link = title_cell.select_one("a")
-                        title = (
-                            title_link.get_text(strip=True)
-                            if title_link
-                            else title_cell.get_text(strip=True)
-                        )
+            if not items:
+                # Fallback: ищем все ссылки в основном контенте
+                main = soup.select_one("main, #main-content, .content, article")
+                if main:
+                    items = main.select("a[href*='project']")
 
-                        link = ""
-                        if title_link:
-                            link = title_link.get("href", "")
-                            if link and not link.startswith("http"):
-                                link = urljoin("https://www.ebrd.com", link)
-
-                        # Извлекаем поля
-                        country = cells[1].get_text(strip=True) if len(cells) > 1 else ""
-                        sector = cells[2].get_text(strip=True) if len(cells) > 2 else ""
-                        notice_type = cells[3].get_text(strip=True) if len(cells) > 3 else ""
-                        deadline = cells[4].get_text(strip=True) if len(cells) > 4 else ""
-
-                        results.append({
-                            "source": "EBRD",
-                            "title": title,
-                            "url": link or url,
-                            "description": f"Sector: {sector}. Notice type: {notice_type}",
-                            "donor": "EBRD",
-                            "tender_deadline": deadline if deadline else None,
-                            "region": country if "tajikistan" in country.lower() else None,
-                            "status": "Active",
-                        })
-                    except Exception as e:
-                        logger.debug("[EBRD] Ошибка парсинга строки: %s", str(e))
-                        continue
-
-            # Пробуем карточки/список
-            if not results:
-                items = soup.select(
-                    ".procurement-notice, .notice-item, .search-result, "
-                    ".views-row, article, .list-item"
-                )
-                for item in items:
-                    try:
-                        title_el = item.select_one("h3 a, h4 a, a.title, a[href]")
+            for item in items:
+                try:
+                    if item.name == "a":
+                        title = item.get_text(strip=True)
+                        link = item.get("href", "")
+                    else:
+                        title_el = item.select_one("a[href], h3 a, h4 a")
                         if not title_el:
                             continue
-
                         title = title_el.get_text(strip=True)
-                        if not title or len(title) < 5:
-                            continue
-
                         link = title_el.get("href", "")
-                        if link and not link.startswith("http"):
-                            link = urljoin("https://www.ebrd.com", link)
 
-                        desc_el = item.select_one("p, .description, .summary")
-                        description = desc_el.get_text(strip=True)[:500] if desc_el else ""
+                    if not title or len(title) < 5:
+                        continue
+                    if not link.startswith("http"):
+                        link = urljoin("https://www.ebrd.com", link)
 
-                        date_el = item.select_one(".date, time, .deadline")
-                        deadline = date_el.get_text(strip=True) if date_el else ""
-
-                        results.append({
-                            "source": "EBRD",
-                            "title": title,
-                            "url": link or url,
-                            "description": description,
-                            "donor": "EBRD",
-                            "tender_deadline": deadline if deadline else None,
-                            "status": "Active",
-                        })
-                    except Exception as e:
-                        logger.debug("[EBRD] Ошибка парсинга карточки: %s", str(e))
+                    # Фильтр по Tajikistan
+                    item_text = (item.get_text() if item.name != "a" else title).lower()
+                    if "tajikistan" not in item_text:
                         continue
 
-            logger.info("[EBRD] Найдено тендеров: %d", len(results))
+                    results.append({
+                        "source": "EBRD Projects",
+                        "title": title,
+                        "url": link,
+                        "donor": "EBRD",
+                        "region": "Tajikistan",
+                        "status": "Active",
+                    })
+                except Exception:
+                    continue
 
         except Exception as e:
-            logger.error("[EBRD] Ошибка парсинга: %s", str(e))
-
-        # Парсим детали для каждого тендера (первые 10)
-        for i, tender in enumerate(results[:10]):
-            if tender.get("url") and tender["url"] != url:
-                await self.delay()
-                detail = await self._scrape_detail(tender["url"])
-                tender.update({k: v for k, v in detail.items() if v})
+            logger.error("[EBRD] Projects error: %s", e)
 
         return results
-
-    async def _scrape_detail(self, url: str) -> dict:
-        """Парсит детальную страницу procurement notice EBRD."""
-        detail = {}
-        html = await self.fetch(url)
-        if not html:
-            return detail
-
-        try:
-            soup = BeautifulSoup(html, "lxml")
-
-            # Основное описание
-            content = soup.select_one(
-                ".field--name-body, .main-content, .procurement-detail, "
-                "#content, article .content"
-            )
-            if content:
-                detail["description"] = content.get_text(strip=True)[:1500]
-
-            # Бюджет
-            for label in soup.select("dt, th, strong, .label"):
-                label_text = label.get_text(strip=True).lower()
-                sibling = label.find_next_sibling()
-                if not sibling:
-                    continue
-                value = sibling.get_text(strip=True)
-
-                if "budget" in label_text or "value" in label_text or "amount" in label_text:
-                    detail["budget"] = value
-                elif "deadline" in label_text or "closing" in label_text:
-                    detail["tender_deadline"] = value
-                elif "contact" in label_text or "email" in label_text:
-                    if "@" in value:
-                        detail["contact_email"] = value
-                    else:
-                        detail["contact_name"] = value
-                elif "sector" in label_text:
-                    detail["description"] = f"Sector: {value}. " + detail.get("description", "")
-
-        except Exception as e:
-            logger.debug("[EBRD] Ошибка парсинга деталей: %s", str(e))
-
-        return detail

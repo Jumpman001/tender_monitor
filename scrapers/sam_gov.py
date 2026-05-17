@@ -72,10 +72,11 @@ class SAMGovScraper(BaseScraper):
                             "source": "SAM.gov",
                             "title": title,
                             "url": url,
-                            "description": description,
+                            "description": description if description else f"Tajikistan {title}",
                             "project_id": sol_number,
                             "donor": f"US Government ({department})" if department else "US Government / USAID",
                             "tender_deadline": str(deadline)[:10] if deadline else None,
+                            "region": "Tajikistan",
                             "status": "Active",
                         })
                     except Exception as e:

@@ -14,19 +14,24 @@ from config import MIN_PIPE_DIAMETER_MM
 
 # ─── УРОВЕНЬ 1: Ключевые слова (русский + английский + таджикский) ──
 KEYWORDS_INCLUDE = [
-    # Английский
-    "water supply", "irrigation", "sewage", "sanitation", "pipeline",
-    "pipe", "drainage", "wastewater", "water main", "aqueduct",
-    "pumping station", "reservoir", "water distribution",
+    # Английский — общие
+    "water supply", "water", "irrigation", "sewage", "sanitation",
+    "pipeline", "pipe", "drainage", "wastewater", "water main",
+    "aqueduct", "pumping station", "reservoir", "water distribution",
     "water infrastructure", "water treatment", "water network",
+    "water resilience", "water sector", "water resources",
+    "urban water", "rural water", "drinking water",
     "transmission main", "trunk main", "ductile iron",
     "hdpe pipe", "steel pipe", "pvc pipe",
+    # Названия проектов
+    "wssp", "rwssp", "wsip", "dwssp",
     # Русский
     "водоснабжение", "ирригация", "канализация", "трубопровод",
     "труба", "водовод", "дренаж", "мелиорация", "насосная станция",
     "распределительная сеть", "магистральный", "водоотведение",
     "водопровод", "напорная труба", "чугунная труба",
-    "полиэтиленовая труба", "стальная труба",
+    "полиэтиленовая труба", "стальная труба", "водный",
+    "водохозяйств", "водоочист",
     # Таджикский
     "обёрешикии об", "ирригатсия", "лӯлакашӣ",
 ]
