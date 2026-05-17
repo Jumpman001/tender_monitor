@@ -123,7 +123,15 @@ async def run_full_scan(bot: Bot) -> None:
                     tender.pipe_length_km = ai_data.get("pipe_length_km")
                     tender.contractor = ai_data.get("contractor") or tender.contractor
                     tender.contact_email = ai_data.get("contact_email") or tender.contact_email
+                    tender.contact_phone = ai_data.get("contact_phone") or tender.contact_phone
                     tender.contact_name = ai_data.get("contact_name") or tender.contact_name
+                    # Добавляем организацию и должность к имени контакта
+                    contact_org = ai_data.get("contact_organization", "")
+                    contact_pos = ai_data.get("contact_position", "")
+                    if contact_org and tender.contact_name:
+                        extra = ", ".join(filter(None, [contact_pos, contact_org]))
+                        if extra:
+                            tender.contact_name = f"{tender.contact_name} ({extra})"
                     tender.region = ai_data.get("region") or tender.region
                     tender.urgency = ai_data.get("urgency", "LOW")
                     tender.summary_ru = ai_data.get("summary_ru")

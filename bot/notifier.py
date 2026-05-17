@@ -1,5 +1,6 @@
 """
-Notifier — форматирование и отправка уведомлений о тендерах в Telegram.
+Notifier — форматирование и отправка уведомлений о проектах в Telegram.
+Фокус: водоснабжение, ирригация, канализация, замена труб в Таджикистане.
 """
 
 from datetime import datetime, timedelta
@@ -15,11 +16,10 @@ from utils.logger import logger
 
 
 def _determine_urgency(tender: Tender) -> str:
-    """Определяет уровень срочности тендера."""
+    """Определяет уровень срочности."""
     # 🔴 HIGH — дедлайн менее 14 дней или статус Active + бюджет > $5 млн
     if tender.tender_deadline:
         try:
-            # Пробуем разные форматы даты
             deadline = None
             for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d.%m.%Y", "%B %d, %Y", "%d %B %Y"):
                 try:
@@ -40,13 +40,11 @@ def _determine_urgency(tender: Tender) -> str:
     # Бюджет > $5 млн и Active
     if tender.status == "Active" and tender.budget:
         try:
-            budget_str = tender.budget.replace(",", "").replace(" ", "")
-            # Извлекаем число
             import re
+            budget_str = tender.budget.replace(",", "").replace(" ", "")
             numbers = re.findall(r"[\d]+(?:\.[\d]+)?", budget_str)
             if numbers:
                 amount = float(numbers[0])
-                # Проверяем единицы
                 if "млн" in tender.budget.lower() or "million" in tender.budget.lower():
                     amount *= 1_000_000
                 if amount > 5_000_000:
@@ -65,85 +63,129 @@ def _urgency_emoji(urgency: str) -> str:
     return {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢"}.get(urgency, "⚪")
 
 
+def _stage_from_status(tender: Tender) -> str:
+    """Определяет стадию проекта по имеющимся данным."""
+    status = (tender.status or "").lower()
+
+    if status in ("completed", "closed", "завершён"):
+        return "✅ Завершён"
+    elif status == "signed":
+        return "🔴 Контракт подписан"
+    elif status == "active":
+        if tender.tender_deadline:
+            return "🟡 Тендер объявлен"
+        return "🏗 В реализации"
+    elif status == "planned":
+        return "🔵 Подготовка"
+    elif status == "cancelled":
+        return "❌ Отменён"
+    else:
+        return f"📊 {tender.status}" if tender.status else "📊 Не определён"
+
+
 def format_tender_message(tender: Tender) -> str:
-    """Форматирует сообщение о тендере для Telegram."""
+    """Форматирует уведомление о проекте для Telegram."""
     urgency = tender.urgency if tender.urgency != "LOW" else _determine_urgency(tender)
     emoji = _urgency_emoji(urgency)
+    stage = _stage_from_status(tender)
 
-    # Основная карточка
+    # ═══ ЗАГОЛОВОК ═══
     lines = [
-        f"{emoji} 🆕 НОВЫЙ ТЕНДЕР",
+        f"{emoji} <b>НОВЫЙ ПРОЕКТ</b>",
         "━━━━━━━━━━━━━━━━━━━━━",
     ]
 
-    # Заголовок
+    # Источник и ID
     project_part = f"📌 {tender.project_id} | " if tender.project_id else "📌 "
-    lines.append(f"{project_part}{tender.source}")
-    lines.append(f"🏗 {tender.title}")
+    lines.append(f"{project_part}<b>{tender.source}</b>")
+    lines.append(f"🏗 <b>{tender.title}</b>")
     lines.append("")
 
-    # Бюджет
-    if tender.budget:
-        lines.append(f"💰 Бюджет: {tender.budget}")
+    # ═══ СТАДИЯ ПРОЕКТА ═══
+    lines.append(f"📊 <b>Стадия:</b> {stage}")
 
-    # Трубы
+    # Дедлайн с оставшимися днями
+    if tender.tender_deadline:
+        days_info = ""
+        try:
+            for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d.%m.%Y", "%B %d, %Y"):
+                try:
+                    dl = datetime.strptime(tender.tender_deadline.strip(), fmt)
+                    days_left = (dl - datetime.utcnow()).days
+                    if days_left > 0:
+                        days_info = f" (<b>{days_left} дней</b>)"
+                    elif days_left == 0:
+                        days_info = " (<b>СЕГОДНЯ!</b>)"
+                    else:
+                        days_info = " (истёк)"
+                    break
+                except ValueError:
+                    continue
+        except Exception:
+            pass
+        lines.append(f"📅 <b>Дедлайн подачи:</b> {tender.tender_deadline}{days_info}")
+
+    if tender.contract_completion:
+        lines.append(f"🏁 <b>Завершение:</b> {tender.contract_completion}")
+
+    lines.append("")
+
+    # ═══ ФИНАНСЫ ═══
+    if tender.budget or tender.donor:
+        if tender.budget:
+            lines.append(f"💰 <b>Бюджет:</b> {tender.budget}")
+        if tender.donor:
+            lines.append(f"🏦 <b>Донор:</b> {tender.donor}")
+        lines.append("")
+
+    # ═══ ТРУБЫ ═══
     pipe_info = []
     if tender.pipe_diameter:
-        pipe_info.append(tender.pipe_diameter)
+        pipe_info.append(f"⌀ {tender.pipe_diameter}")
     if tender.pipe_type:
         pipe_info.append(tender.pipe_type)
     if pipe_info:
-        lines.append(f"🔩 Трубы: {' | '.join(pipe_info)}")
-
-    # Протяжённость
+        lines.append(f"🔩 <b>Трубы:</b> {' | '.join(pipe_info)}")
     if tender.pipe_length_km:
-        lines.append(f"📏 Протяжённость: {tender.pipe_length_km} км")
-
-    # Регион
-    if tender.region:
-        lines.append(f"📍 Регион: {tender.region}")
-
-    # Дедлайн
-    if tender.tender_deadline:
-        lines.append(f"📅 Дедлайн: {tender.tender_deadline}")
-
-    # Завершение
-    if tender.contract_completion:
-        lines.append(f"✅ Завершение: {tender.contract_completion}")
-
-    # Статус
-    lines.append(f"📊 Статус: {tender.status}")
-    lines.append("")
-
-    # Контакты
-    if tender.contact_name:
-        lines.append(f"👤 Контакт: {tender.contact_name}")
-    if tender.contact_email:
-        lines.append(f"📧 Email: {tender.contact_email}")
-    if tender.contact_phone:
-        lines.append(f"📞 Тел: {tender.contact_phone}")
-    if tender.donor:
-        lines.append(f"🏦 Донор: {tender.donor}")
-    if tender.contractor:
-        lines.append(f"🔨 Подрядчик: {tender.contractor}")
-
-    lines.append("")
-
-    # AI Summary
-    if tender.summary_ru:
-        lines.append(f"📝 {tender.summary_ru}")
+        lines.append(f"📏 <b>Протяжённость:</b> {tender.pipe_length_km} км")
+    if pipe_info or tender.pipe_length_km:
         lines.append("")
 
-    # URL
-    lines.append(f"🔗 <a href=\"{tender.url}\">Открыть тендер</a>")
+    # ═══ РЕГИОН И ПОДРЯДЧИК ═══
+    if tender.region:
+        lines.append(f"📍 <b>Регион:</b> {tender.region}")
+    if tender.contractor:
+        lines.append(f"🔨 <b>Подрядчик:</b> {tender.contractor}")
+    if tender.region or tender.contractor:
+        lines.append("")
+
+    # ═══ КОНТАКТЫ ═══
+    has_contacts = tender.contact_name or tender.contact_email or tender.contact_phone
+    if has_contacts:
+        lines.append("📞 <b>КОНТАКТЫ:</b>")
+        if tender.contact_name:
+            lines.append(f"   👤 {tender.contact_name}")
+        if tender.contact_email:
+            lines.append(f"   📧 {tender.contact_email}")
+        if tender.contact_phone:
+            lines.append(f"   📱 {tender.contact_phone}")
+        lines.append("")
+
+    # ═══ AI АНАЛИТИКА ═══
+    if tender.summary_ru:
+        lines.append(f"📝 <i>{tender.summary_ru}</i>")
+        lines.append("")
+
+    # ═══ ССЫЛКА ═══
+    lines.append(f"🔗 <a href=\"{tender.url}\">Открыть проект →</a>")
     lines.append("━━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"⏱ Найдено: {tender.first_seen[:19]}")
+    lines.append(f"⏱ {tender.first_seen[:16] if tender.first_seen else 'сейчас'}")
 
     return "\n".join(lines)
 
 
 async def send_tender_notification(bot: Bot, tender: Tender) -> bool:
-    """Отправляет уведомление о тендере в Telegram."""
+    """Отправляет уведомление о проекте в Telegram."""
     if not TELEGRAM_CHAT_ID:
         logger.warning("[Notifier] TELEGRAM_CHAT_ID не установлен")
         return False
@@ -177,30 +219,32 @@ async def send_digest(bot: Bot, report_data: dict) -> bool:
         total_count = report_data.get("total_count", 0)
 
         lines = [
-            "📊 <b>ЕЖЕНЕДЕЛЬНЫЙ ДАЙДЖЕСТ</b>",
+            "📊 <b>ЕЖЕНЕДЕЛЬНЫЙ ДАЙДЖЕСТ — ПРОЕКТЫ ВОДОСНАБЖЕНИЯ ТДЖ</b>",
             "━━━━━━━━━━━━━━━━━━━━━",
-            f"📅 Период: {(datetime.utcnow() - timedelta(days=7)).strftime('%d.%m')} — {datetime.utcnow().strftime('%d.%m.%Y')}",
+            f"📅 {(datetime.utcnow() - timedelta(days=7)).strftime('%d.%m')} — {datetime.utcnow().strftime('%d.%m.%Y')}",
             "",
-            f"🆕 Новых тендеров за неделю: <b>{len(new_tenders)}</b>",
-            f"✅ Активных тендеров: <b>{active_count}</b>",
+            f"🆕 Новых проектов: <b>{len(new_tenders)}</b>",
+            f"🟡 С активным тендером: <b>{active_count}</b>",
             f"📦 Всего в базе: <b>{total_count}</b>",
             "",
         ]
 
         if new_tenders:
-            lines.append("<b>Новые тендеры:</b>")
+            lines.append("<b>Новые проекты:</b>")
             lines.append("")
             for i, t in enumerate(new_tenders[:15], 1):
                 urgency = _determine_urgency(t)
                 emoji = _urgency_emoji(urgency)
+                stage = _stage_from_status(t)
                 budget_str = f" | {t.budget}" if t.budget else ""
                 lines.append(
-                    f"{emoji} {i}. <a href=\"{t.url}\">{t.title[:60]}</a>{budget_str}"
+                    f"{emoji} {i}. <a href=\"{t.url}\">{t.title[:55]}</a>"
                 )
+                lines.append(f"     {stage}{budget_str}")
             if len(new_tenders) > 15:
-                lines.append(f"... и ещё {len(new_tenders) - 15} тендеров")
+                lines.append(f"... и ещё {len(new_tenders) - 15} проектов")
         else:
-            lines.append("ℹ️ Новых тендеров не обнаружено.")
+            lines.append("ℹ️ Новых проектов не обнаружено.")
 
         lines.append("")
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
@@ -219,22 +263,37 @@ async def send_digest(bot: Bot, report_data: dict) -> bool:
 
 
 async def send_deadline_reminder(bot: Bot, tenders: list[Tender]) -> bool:
-    """Отправляет напоминания о тендерах с дедлайном < 7 дней."""
+    """Отправляет напоминания о проектах с дедлайном < 7 дней."""
     if not TELEGRAM_CHAT_ID or not tenders:
         return False
 
     try:
         lines = [
-            "⚠️ <b>НАПОМИНАНИЕ: СКОРЫЕ ДЕДЛАЙНЫ</b>",
+            "⚠️ <b>СКОРЫЕ ДЕДЛАЙНЫ — ДЕЙСТВУЙТЕ!</b>",
             "━━━━━━━━━━━━━━━━━━━━━",
             "",
         ]
 
         for t in tenders:
-            lines.append(f"🔴 <a href=\"{t.url}\">{t.title[:60]}</a>")
-            lines.append(f"   📅 Дедлайн: {t.tender_deadline}")
+            days_info = ""
+            try:
+                for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d.%m.%Y"):
+                    try:
+                        dl = datetime.strptime(t.tender_deadline.strip(), fmt)
+                        days_left = (dl - datetime.utcnow()).days
+                        days_info = f" ({days_left} дн.)" if days_left > 0 else " (СЕГОДНЯ!)"
+                        break
+                    except ValueError:
+                        continue
+            except Exception:
+                pass
+
+            lines.append(f"🔴 <a href=\"{t.url}\">{t.title[:55]}</a>")
+            lines.append(f"   📅 Дедлайн: <b>{t.tender_deadline}</b>{days_info}")
             if t.budget:
                 lines.append(f"   💰 {t.budget}")
+            if t.contact_email:
+                lines.append(f"   📧 {t.contact_email}")
             lines.append("")
 
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
