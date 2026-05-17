@@ -77,6 +77,8 @@ class BaseScraper(ABC):
                             "[%s] HTTP %d для %s",
                             self.source_name, resp.status, url[:80],
                         )
+                        if resp.status in (403, 404):
+                            break
             except aiohttp.ClientConnectorSSLError:
                 # SSL ошибка — пробуем без верификации
                 logger.warning(
@@ -133,6 +135,8 @@ class BaseScraper(ABC):
                             "[%s] HTTP %d (JSON) для %s",
                             self.source_name, resp.status, url[:80],
                         )
+                        if resp.status in (403, 404):
+                            break
             except aiohttp.ClientConnectorSSLError:
                 try:
                     connector = aiohttp.TCPConnector(ssl=False)

@@ -34,10 +34,7 @@ class WorldBankScraper(BaseScraper):
         logger.info("[WorldBank] STEP API: %d", len(step))
         await self.delay()
 
-        # 3. wsip-1.tj — простой HTML, парсится нормально
-        wsip = await self._scrape_wsip()
-        results.extend(wsip)
-        logger.info("[WorldBank] WSIP-1 PMU: %d", len(wsip))
+
 
         logger.info("[WorldBank] ИТОГО: %d", len(results))
         return results
@@ -210,37 +207,4 @@ class WorldBankScraper(BaseScraper):
         return results
 
     # ──────────────────────────────────────────────────────────────────────────
-    # 3. WSIP-1 PMU — простой HTML сайт
-    # ──────────────────────────────────────────────────────────────────────────
-    async def _scrape_wsip(self) -> list[dict]:
-        """wsip-1.tj — прямой сайт PMU WSIP-1."""
-        urls = ["https://wsip-1.tj/", "https://wsip-1.tj/procurement/"]
-        results = []
 
-        for url in urls:
-            html = await self.fetch(url)
-            if not html:
-                continue
-            try:
-                soup = BeautifulSoup(html, "lxml")
-                for a in soup.find_all("a", href=True):
-                    text = a.get_text(strip=True)
-                    href = a["href"]
-                    if not text or len(text) < 10:
-                        continue
-                    kw = ["procurement", "tender", "bid", "закупк", "тендер",
-                          "pipe", "труб", "water", "вода", "wsip", "rwssp"]
-                    if any(k in text.lower() or k in href.lower() for k in kw):
-                        full_url = href if href.startswith("http") else urljoin(url, href)
-                        results.append({
-                            "source": "WSIP-1 PMU",
-                            "title": text,
-                            "url": full_url,
-                            "donor": "World Bank IDA",
-                            "contact_email": "pmu@wsip-1.tj",
-                            "status": "Active",
-                        })
-            except Exception as e:
-                logger.debug("[WorldBank] WSIP ошибка: %s", e)
-
-        return results
