@@ -7,3 +7,4 @@ aiosqlite==0.20.0
 python-dotenv==1.0.1
 lxml==5.3.0
 fake-useragent==1.5.1
+feedparser==6.0.11

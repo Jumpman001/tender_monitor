@@ -1,7 +1,16 @@
 """
-ADB Scraper — Asian Development Bank тендеры Таджикистана.
+ADB Scraper v2 — исправленная версия.
+
+ПРОБЛЕМА оригинала: adb.org/projects/tenders — React-приложение.
+BeautifulSoup получает <div id="app"></div> → 0 результатов.
+
+РЕШЕНИЕ:
+- ADB тендеры → официальный RSS фид (чистый XML, без JS)
+- ADB проекты → JSON API (search.adb.org)
+- Детали тендера → парсим HTML отдельных страниц (они простые)
 """
 
+import feedparser
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
@@ -10,135 +19,206 @@ from utils.logger import logger
 
 
 class ADBScraper(BaseScraper):
-    """Скрапер для Asian Development Bank."""
 
     def __init__(self):
         super().__init__("ADB")
 
     async def scrape(self) -> list[dict]:
-        """Парсит тендеры ADB для Таджикистана."""
         results = []
 
-        # Основная страница тендеров
-        url = "https://www.adb.org/projects/tenders?country=TAJ&status=Active"
-        html = await self.fetch(url)
-        if not html:
-            logger.warning("[ADB] Не удалось загрузить страницу тендеров")
+        # 1. ADB RSS — главный источник (надёжный, без JS)
+        rss = await self._scrape_rss()
+        results.extend(rss)
+        logger.info("[ADB] RSS: %d тендеров", len(rss))
+        await self.delay()
+
+        # 2. ADB JSON API проектов
+        api = await self._scrape_projects_api()
+        results.extend(api)
+        logger.info("[ADB] Projects API: %d проектов", len(api))
+
+        logger.info("[ADB] ИТОГО: %d", len(results))
+        return results
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # 1. ADB RSS FEED — самый надёжный способ
+    # ──────────────────────────────────────────────────────────────────────────
+    async def _scrape_rss(self) -> list[dict]:
+        """
+        Официальный RSS ADB по тендерам Таджикистана.
+        Документация: adb.org/rss
+        Не требует JS — чистый XML.
+        """
+        # RSS фиды ADB по Таджикистану
+        rss_urls = [
+            "https://www.adb.org/rss/projects/tenders?country=TAJ",
+            # Fallback — все активные тендеры (фильтруем по TJ сами)
+            "https://www.adb.org/rss/projects/tenders?status=Active",
+        ]
+        results = []
+        seen_links = set()
+
+        for rss_url in rss_urls:
+            try:
+                rss_text = await self.fetch(rss_url)
+                if not rss_text:
+                    logger.warning("[ADB] RSS недоступен: %s", rss_url[:60])
+                    continue
+
+                feed = feedparser.parse(rss_text)
+                if not feed.entries:
+                    logger.warning("[ADB] RSS пуст: %s", rss_url[:60])
+                    continue
+
+                for entry in feed.entries:
+                    link = entry.get("link", "")
+                    if link in seen_links:
+                        continue
+                    seen_links.add(link)
+
+                    title = entry.get("title", "").strip()
+                    summary = entry.get("summary", entry.get("description", ""))
+                    published = entry.get("published", "")
+                    category = entry.get("tags", [{}])[0].get("term", "") if entry.get("tags") else ""
+
+                    if not title:
+                        continue
+
+                    # Если парсим общий фид — фильтруем по Tajikistan
+                    if "country=TAJ" not in rss_url:
+                        combined = f"{title} {summary}".lower()
+                        if "tajikistan" not in combined and "TAJ" not in combined:
+                            continue
+
+                    # Очищаем HTML из summary
+                    clean_desc = ""
+                    if summary:
+                        clean_desc = BeautifulSoup(summary, "lxml").get_text(strip=True)[:600]
+
+                    results.append({
+                        "source": "ADB",
+                        "title": title,
+                        "url": link,
+                        "description": clean_desc,
+                        "donor": "Asian Development Bank",
+                        "tender_deadline": published[:10] if published else None,
+                        "region": "Tajikistan",
+                        "status": "Active",
+                    })
+
+                logger.info("[ADB] RSS %s: %d записей", rss_url[-30:], len(feed.entries))
+                break  # Если первый RSS сработал — второй не нужен
+
+            except Exception as e:
+                logger.error("[ADB] RSS ошибка (%s): %s", rss_url[:40], e)
+
+        # Парсим детали для первых 10 результатов
+        for tender in results[:10]:
+            if tender.get("url") and "adb.org" in tender["url"]:
+                await self.delay()
+                detail = await self._scrape_detail_page(tender["url"])
+                tender.update({k: v for k, v in detail.items() if v})
+
+        return results
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # 2. ADB PROJECTS JSON API
+    # ──────────────────────────────────────────────────────────────────────────
+    async def _scrape_projects_api(self) -> list[dict]:
+        """
+        ADB Projects API — список активных проектов по Таджикистану.
+        Возвращает JSON без JS-рендеринга.
+        """
+        # ADB search API
+        api_url = (
+            "https://www.adb.org/api/projects/search"
+            "?country=TAJ&status=active&page=1&per_page=30"
+        )
+        results = []
+        data = await self.fetch_json(api_url)
+
+        if not data:
+            # Fallback: попробуем другой формат
+            api_url2 = "https://www.adb.org/api/v1/projects?country=TAJ&status=Active"
+            data = await self.fetch_json(api_url2)
+
+        if not data:
+            logger.warning("[ADB] Projects API не ответил")
             return results
 
         try:
-            soup = BeautifulSoup(html, "lxml")
-
-            # ADB обычно отображает тендеры в таблице или списке
-            # Пробуем таблицу
-            table = soup.select_one("table.views-table, table.tender-list, table")
-            if table:
-                rows = table.select("tbody tr")
-                for row in rows:
-                    try:
-                        cells = row.select("td")
-                        if len(cells) < 2:
-                            continue
-
-                        # Извлекаем данные из ячеек
-                        title_cell = cells[0]
-                        title_link = title_cell.select_one("a")
-
-                        title = title_link.get_text(strip=True) if title_link else title_cell.get_text(strip=True)
-                        link = ""
-                        if title_link:
-                            link = title_link.get("href", "")
-                            if link and not link.startswith("http"):
-                                link = urljoin("https://www.adb.org", link)
-
-                        # Пробуем извлечь sector, project, deadline из других ячеек
-                        project_id = cells[1].get_text(strip=True) if len(cells) > 1 else ""
-                        sector = cells[2].get_text(strip=True) if len(cells) > 2 else ""
-                        deadline = cells[3].get_text(strip=True) if len(cells) > 3 else ""
-                        budget = cells[4].get_text(strip=True) if len(cells) > 4 else ""
-
-                        results.append({
-                            "source": "ADB",
-                            "title": title,
-                            "url": link or url,
-                            "description": f"Sector: {sector}",
-                            "project_id": project_id,
-                            "donor": "ADB",
-                            "budget": budget if budget else None,
-                            "tender_deadline": deadline if deadline else None,
-                            "status": "Active",
-                        })
-                    except Exception as e:
-                        logger.debug("[ADB] Ошибка парсинга строки таблицы: %s", str(e))
-                        continue
-
-            # Пробуем список (views-row)
-            if not results:
-                items = soup.select(
-                    ".views-row, .item-list li, .view-content .views-row, "
-                    ".tender-item, article"
+            # ADB API может вернуть разные структуры
+            projects = []
+            if isinstance(data, list):
+                projects = data
+            elif isinstance(data, dict):
+                projects = (
+                    data.get("projects", [])
+                    or data.get("data", [])
+                    or data.get("results", [])
+                    or list(data.values())
                 )
-                for item in items:
+
+            for proj in projects:
+                if not isinstance(proj, dict):
+                    continue
+
+                title = (
+                    proj.get("title", "")
+                    or proj.get("project_title", "")
+                    or proj.get("name", "")
+                ).strip()
+
+                if not title:
+                    continue
+
+                proj_id = (
+                    proj.get("project_number", "")
+                    or proj.get("id", "")
+                    or proj.get("projectNumber", "")
+                )
+                proj_url = (
+                    proj.get("url", "")
+                    or proj.get("link", "")
+                    or f"https://www.adb.org/projects/{proj_id}/main"
+                )
+                budget = proj.get("loan_amount", proj.get("amount", proj.get("totalAmount", "")))
+                sector = proj.get("sector", proj.get("theme", ""))
+                closing = proj.get("closing_date", proj.get("endDate", ""))
+
+                budget_str = ""
+                if budget:
                     try:
-                        title_el = item.select_one("h3 a, h4 a, .views-field-title a, a")
-                        if not title_el:
-                            continue
+                        budget_str = f"$ {int(float(str(budget).replace(',', ''))):,}"
+                    except Exception:
+                        budget_str = str(budget)
 
-                        title = title_el.get_text(strip=True)
-                        link = title_el.get("href", "")
-                        if link and not link.startswith("http"):
-                            link = urljoin("https://www.adb.org", link)
-
-                        # Sector
-                        sector_el = item.select_one(
-                            ".views-field-field-sector, .sector, .field-sector"
-                        )
-                        sector = sector_el.get_text(strip=True) if sector_el else ""
-
-                        # Deadline
-                        date_el = item.select_one(
-                            ".views-field-field-date, .date, .deadline, time"
-                        )
-                        deadline = date_el.get_text(strip=True) if date_el else ""
-
-                        # Project ID
-                        proj_el = item.select_one(
-                            ".views-field-field-project-number, .project-number"
-                        )
-                        project_id = proj_el.get_text(strip=True) if proj_el else ""
-
-                        results.append({
-                            "source": "ADB",
-                            "title": title,
-                            "url": link or url,
-                            "description": f"Sector: {sector}" if sector else "",
-                            "project_id": project_id,
-                            "donor": "ADB",
-                            "tender_deadline": deadline if deadline else None,
-                            "status": "Active",
-                        })
-                    except Exception as e:
-                        logger.debug("[ADB] Ошибка парсинга элемента: %s", str(e))
-                        continue
-
-            logger.info("[ADB] Найдено тендеров: %d", len(results))
+                results.append({
+                    "source": "ADB Projects",
+                    "title": title,
+                    "url": proj_url if proj_url.startswith("http") else f"https://www.adb.org{proj_url}",
+                    "description": f"Sector: {sector}" if sector else "",
+                    "project_id": str(proj_id),
+                    "donor": "Asian Development Bank",
+                    "budget": budget_str,
+                    "contract_completion": str(closing)[:10] if closing else None,
+                    "region": "Tajikistan",
+                    "status": "Active",
+                })
 
         except Exception as e:
-            logger.error("[ADB] Ошибка парсинга: %s", str(e))
+            logger.error("[ADB] Projects API parse error: %s", e)
 
-        # Парсим детали для каждого тендера (первые 10)
-        detailed_results = []
-        for i, tender in enumerate(results[:10]):
-            if tender.get("url") and tender["url"] != url:
-                await self.delay()
-                detail = await self._scrape_detail(tender["url"])
-                tender.update({k: v for k, v in detail.items() if v})
-            detailed_results.append(tender)
+        return results
 
-        return detailed_results
-
-    async def _scrape_detail(self, url: str) -> dict:
-        """Парсит детальную страницу тендера ADB."""
+    # ──────────────────────────────────────────────────────────────────────────
+    # 3. ДЕТАЛЬНАЯ СТРАНИЦА — отдельные страницы тендеров простые HTML
+    # ──────────────────────────────────────────────────────────────────────────
+    async def _scrape_detail_page(self, url: str) -> dict:
+        """
+        Детальные страницы ADB тендеров (не список!) — обычный HTML.
+        Парсится нормально через BeautifulSoup.
+        """
         detail = {}
         html = await self.fetch(url)
         if not html:
@@ -147,28 +227,39 @@ class ADBScraper(BaseScraper):
         try:
             soup = BeautifulSoup(html, "lxml")
 
+            # ADB detail page структура
+            # Ищем пары label: value
+            for row in soup.select("tr, .field-group, dl dt, .detail-row"):
+                label_el = row.select_one("th, dt, .label, strong")
+                value_el = row.select_one("td, dd, .value, span:last-child")
+                if not label_el or not value_el:
+                    continue
+
+                label = label_el.get_text(strip=True).lower()
+                value = value_el.get_text(strip=True)
+
+                if not value:
+                    continue
+
+                if any(k in label for k in ["deadline", "closing", "submission date"]):
+                    detail["tender_deadline"] = value
+                elif any(k in label for k in ["amount", "budget", "cost", "value"]):
+                    detail["budget"] = value
+                elif any(k in label for k in ["project no", "project number", "reference"]):
+                    detail["project_id"] = value
+                elif "contact" in label:
+                    detail["contact_name"] = value
+                elif "email" in label or "@" in value:
+                    detail["contact_email"] = value
+                elif any(k in label for k in ["sector", "theme"]):
+                    detail["description"] = f"Sector: {value}"
+
             # Описание
-            body = soup.select_one(
-                ".field--name-body, .main-content, article .content, #content"
-            )
-            if body:
-                detail["description"] = body.get_text(strip=True)[:1000]
-
-            # Budget
-            budget_el = soup.select_one(
-                ".field--name-field-amount, .budget, .cost"
-            )
-            if budget_el:
-                detail["budget"] = budget_el.get_text(strip=True)
-
-            # Contact
-            contact_el = soup.select_one(
-                ".field--name-field-contact, .contact-info"
-            )
-            if contact_el:
-                detail["contact_name"] = contact_el.get_text(strip=True)[:200]
+            desc = soup.select_one(".field--name-body, .project-description, #content .text")
+            if desc:
+                detail["description"] = desc.get_text(strip=True)[:1000]
 
         except Exception as e:
-            logger.debug("[ADB] Ошибка парсинга деталей: %s", str(e))
+            logger.debug("[ADB] Detail parse error %s: %s", url[:50], e)
 
         return detail
