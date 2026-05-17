@@ -8,6 +8,10 @@ from datetime import datetime
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+
+from core.deep_search import deep_investigate
 
 from config import TELEGRAM_CHAT_ID, SCAN_INTERVAL_HOURS
 from database import db
@@ -16,6 +20,9 @@ from bot.notifier import format_tender_message, send_tender_notification
 from utils.logger import logger
 
 router = Router()
+
+class SearchState(StatesGroup):
+    waiting_for_project_name = State()
 
 # ─── Ссылка на функцию сканирования (устанавливается из main.py) ────
 _run_scan_func = None
@@ -368,3 +375,35 @@ async def callback_tender_history(callback: CallbackQuery):
         text = "ℹ️ Тендер не найден в базе."
 
     await callback.message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+
+
+# ─── Глубокий поиск (Deep Search) ────────────────────────────────────
+
+@router.callback_query(F.data == "cmd:deep_search")
+async def process_deep_search_btn(callback: CallbackQuery, state: FSMContext):
+    """Нажатие кнопки 'Поиск в сети'."""
+    await callback.message.answer(
+        "🔍 <b>Глубокий поиск по проекту</b>\n\n"
+        "Отправьте мне название проекта, тендера или любую ключевую информацию (на английском или русском).\n"
+        "Я найду все доступные данные в интернете и составлю полное досье.",
+        parse_mode="HTML"
+    )
+    await state.set_state(SearchState.waiting_for_project_name)
+    await callback.answer()
+
+@router.message(SearchState.waiting_for_project_name)
+async def execute_deep_search(message: Message, state: FSMContext):
+    project_name = message.text.strip()
+    if len(project_name) < 3:
+        await message.answer("Слишком короткое название. Попробуйте снова.")
+        return
+        
+    await state.clear()
+    msg = await message.answer("⏳ <i>Ищу информацию в открытых источниках и анализирую... (это займет около 10-20 секунд)</i>", parse_mode="HTML")
+    
+    try:
+        report = await deep_investigate(project_name)
+        await msg.edit_text(report, parse_mode="HTML")
+    except Exception as e:
+        logger.error("Deep search error: %s", e)
+        await msg.edit_text("⚠️ Ошибка при поиске. Попробуйте позже.")

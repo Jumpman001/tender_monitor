@@ -83,9 +83,15 @@ def start_keyboard() -> InlineKeyboardMarkup:
                 text="🔴 Срочные",
                 callback_data="cmd:urgent",
             ),
+        ],
+        [
             InlineKeyboardButton(
                 text="📊 Отчёт",
                 callback_data="cmd:report",
+            ),
+            InlineKeyboardButton(
+                text="🌐 Поиск в сети",
+                callback_data="cmd:deep_search",
             ),
         ],
     ]
