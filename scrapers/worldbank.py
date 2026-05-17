@@ -171,10 +171,20 @@ class WorldBankScraper(BaseScraper):
 
                 description = f"{notice_type}: {project_name}" if project_name else notice_type
 
+                # URL: ссылка на страницу проекта с секцией procurement
+                # (единственный рабочий формат — 200 OK, проверено)
+                tender_url = (
+                    f"https://projects.worldbank.org/en/projects-operations"
+                    f"/project-detail/{proj_id}#procurement"
+                ) if proj_id else (
+                    "https://projects.worldbank.org/en/projects-operations"
+                    "/procurement?countrycode_exact=TJ"
+                )
+
                 results.append({
                     "source": "World Bank STEP",
                     "title": title,
-                    "url": f"https://projects.worldbank.org/en/projects-operations/procurement/noticesearch?OP_LANG=EN&project_ctry_code=TJ",
+                    "url": tender_url,
                     "description": description,
                     "project_id": f"{proj_id} / {bid_ref}" if bid_ref else str(proj_id),
                     "donor": "World Bank IDA",
